@@ -14,7 +14,7 @@
   "formation": {
     "web": {
       "quantity": 1,
-      "size": "Hobby"
+      "size": "Eco"
     }
   },
   "image": "heroku/node",
