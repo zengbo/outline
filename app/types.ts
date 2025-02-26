@@ -26,7 +26,8 @@ export type MenuItemButton = {
   visible?: boolean;
   selected?: boolean;
   disabled?: boolean;
-  icon?: React.ReactElement;
+  icon?: React.ReactNode;
+  tooltip?: React.ReactChild;
 };
 
 export type MenuItemWithChildren = {
@@ -38,7 +39,7 @@ export type MenuItemWithChildren = {
   hover?: boolean;
 
   items: MenuItem[];
-  icon?: React.ReactElement;
+  icon?: React.ReactNode;
 };
 
 export type MenuSeparator = {
@@ -59,7 +60,7 @@ export type MenuInternalLink = {
   visible?: boolean;
   selected?: boolean;
   disabled?: boolean;
-  icon?: React.ReactElement;
+  icon?: React.ReactNode;
 };
 
 export type MenuExternalLink = {
@@ -70,7 +71,7 @@ export type MenuExternalLink = {
   selected?: boolean;
   disabled?: boolean;
   level?: number;
-  icon?: React.ReactElement;
+  icon?: React.ReactNode;
 };
 
 export type MenuItem =
@@ -108,7 +109,7 @@ export type Action = {
   /** Higher number is higher in results, default is 0. */
   priority?: number;
   iconInContextMenu?: boolean;
-  icon?: React.ReactElement | React.FC;
+  icon?: React.ReactNode;
   placeholder?: ((context: ActionContext) => string) | string;
   selected?: (context: ActionContext) => boolean;
   visible?: (context: ActionContext) => boolean;
@@ -127,7 +128,7 @@ export type CommandBarAction = {
   shortcut: string[];
   keywords: string;
   placeholder?: string;
-  icon?: React.ReactElement;
+  icon?: React.ReactNode;
   perform?: () => void;
   children?: string[];
   parent?: string;

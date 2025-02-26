@@ -56,6 +56,7 @@ export enum FileOperationState {
 
 export enum MentionType {
   User = "user",
+  Document = "document",
 }
 
 export type PublicEnv = {
@@ -268,6 +269,10 @@ export type CollectionSort = {
   field: string;
   direction: "asc" | "desc";
 };
+
+export enum SubscriptionType {
+  Document = "documents.update",
+}
 
 export enum NotificationEventType {
   PublishDocument = "documents.publish",

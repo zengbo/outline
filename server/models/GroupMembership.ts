@@ -19,12 +19,18 @@ import {
   AfterCreate,
   AfterUpdate,
   AfterDestroy,
+  BeforeDestroy,
+  BeforeUpdate,
 } from "sequelize-typescript";
 import { CollectionPermission, DocumentPermission } from "@shared/types";
+import { ValidationError } from "@server/errors";
+import { APIContext } from "@server/types";
 import Collection from "./Collection";
 import Document from "./Document";
 import Group from "./Group";
 import User from "./User";
+import UserMembership from "./UserMembership";
+import { type HookContext } from "./base/Model";
 import ParanoidModel from "./base/ParanoidModel";
 import Fix from "./decorators/Fix";
 
@@ -123,6 +129,10 @@ class GroupMembership extends ParanoidModel<
   @Column(DataType.UUID)
   createdById: string;
 
+  get modelId() {
+    return this.groupId;
+  }
+
   // static methods
 
   /**
@@ -152,7 +162,7 @@ class GroupMembership extends ParanoidModel<
             permission: membership.permission,
             createdById: membership.createdById,
           },
-          { transaction }
+          { transaction, hooks: false }
         )
       )
     );
@@ -203,6 +213,17 @@ class GroupMembership extends ParanoidModel<
     return this.recreateSourcedMemberships(model, options);
   }
 
+  @AfterCreate
+  static async publishAddGroupEventAfterCreate(
+    model: GroupMembership,
+    context: APIContext["context"]
+  ) {
+    await model.insertEvent(context, "add_group", {
+      membershipId: model.id,
+      isNew: true,
+    });
+  }
+
   @AfterUpdate
   static async updateSourcedMemberships(
     model: GroupMembership,
@@ -230,6 +251,47 @@ class GroupMembership extends ParanoidModel<
     }
   }
 
+  @BeforeUpdate
+  static async checkLastAdminBeforeUpdate(
+    model: GroupMembership,
+    ctx: APIContext["context"]
+  ) {
+    if (
+      model.permission === CollectionPermission.Admin ||
+      model.previous("permission") !== CollectionPermission.Admin ||
+      !model.collectionId
+    ) {
+      return;
+    }
+    await this.validateLastAdminPermission(model, ctx);
+  }
+
+  @BeforeDestroy
+  static async checkLastAdminBeforeDestroy(
+    model: GroupMembership,
+    ctx: APIContext["context"]
+  ) {
+    // Only check for last admin permission if this permission is admin
+    if (
+      model.permission !== CollectionPermission.Admin ||
+      !model.collectionId
+    ) {
+      return;
+    }
+    await this.validateLastAdminPermission(model, ctx);
+  }
+
+  @AfterUpdate
+  static async publishAddGroupEventAfterUpdate(
+    model: GroupMembership,
+    context: APIContext["context"]
+  ) {
+    await model.insertEvent(context, "add_group", {
+      membershipId: model.id,
+      isNew: false,
+    });
+  }
+
   @AfterDestroy
   static async destroySourcedMemberships(
     model: GroupMembership,
@@ -246,6 +308,16 @@ class GroupMembership extends ParanoidModel<
         sourceId: model.id,
       },
       transaction,
+    });
+  }
+
+  @AfterDestroy
+  static async publishRemoveGroupEvent(
+    model: GroupMembership,
+    context: APIContext["context"]
+  ) {
+    await model.insertEvent(context, "remove_group", {
+      membershipId: model.id,
     });
   }
 
@@ -269,13 +341,15 @@ class GroupMembership extends ParanoidModel<
       transaction,
     });
 
-    const document = await Document.unscoped().findOne({
-      attributes: ["id"],
-      where: {
-        id: model.documentId,
-      },
-      transaction,
-    });
+    const document = await Document.unscoped()
+      .scope("withoutState")
+      .findOne({
+        attributes: ["id"],
+        where: {
+          id: model.documentId,
+        },
+        transaction,
+      });
     if (!document) {
       return;
     }
@@ -304,7 +378,53 @@ class GroupMembership extends ParanoidModel<
         },
         {
           transaction,
+          hooks: false,
         }
+      );
+    }
+  }
+
+  private async insertEvent(
+    ctx: APIContext["context"],
+    name: string,
+    data: Record<string, unknown>
+  ) {
+    const hookContext = {
+      ...ctx,
+      event: { name, data, create: true },
+    } as HookContext;
+
+    if (this.collectionId) {
+      await Collection.insertEvent(name, this, hookContext);
+    } else {
+      await Document.insertEvent(name, this, hookContext);
+    }
+  }
+
+  private static async validateLastAdminPermission(
+    model: GroupMembership,
+    { transaction }: APIContext["context"]
+  ) {
+    const [userMemberships, groupMemberships] = await Promise.all([
+      UserMembership.count({
+        where: {
+          collectionId: model.collectionId,
+          permission: CollectionPermission.Admin,
+        },
+        transaction,
+      }),
+      this.count({
+        where: {
+          collectionId: model.collectionId,
+          permission: CollectionPermission.Admin,
+        },
+        transaction,
+      }),
+    ]);
+
+    if (userMemberships === 0 && groupMemberships === 1) {
+      throw ValidationError(
+        "At least one user or group must have manage permissions"
       );
     }
   }

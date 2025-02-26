@@ -5,13 +5,10 @@ import isObject from "lodash/isObject";
 import pick from "lodash/pick";
 import {
   Attributes,
-  CreateOptions,
   CreationAttributes,
   DataTypes,
   FindOptions,
   FindOrCreateOptions,
-  InstanceDestroyOptions,
-  InstanceUpdateOptions,
   ModelStatic,
   NonAttribute,
   SaveOptions,
@@ -19,48 +16,105 @@ import {
 import {
   AfterCreate,
   AfterDestroy,
+  AfterRestore,
   AfterUpdate,
   AfterUpsert,
-  BeforeCreate,
+  BeforeSave,
   Model as SequelizeModel,
 } from "sequelize-typescript";
 import Logger from "@server/logging/Logger";
 import { Replace, APIContext } from "@server/types";
 import { getChangsetSkipped } from "../decorators/Changeset";
 
+type EventOverrideOptions = {
+  /** Override the default event name. */
+  name?: string;
+  /** Additional data to publish in the event. */
+  data?: Record<string, unknown>;
+};
+
+type EventOptions = EventOverrideOptions & {
+  /**
+   * Whether to publish event to the job queue. Defaults to true when using any `withCtx` methods.
+   */
+  create: boolean;
+};
+
+export type HookContext = APIContext["context"] & { event?: EventOptions };
+
 class Model<
   TModelAttributes extends {} = any,
   TCreationAttributes extends {} = TModelAttributes
 > extends SequelizeModel<TModelAttributes, TCreationAttributes> {
   /**
-   * The namespace to use for events, if none is provided an event will not be created
-   * during the migration period. In the future this may default to the table name.
+   * The namespace to use for events - defaults to the table name if none is provided.
    */
   static eventNamespace: string | undefined;
 
   /**
    * Validates this instance, and if the validation passes, persists it to the database.
    */
-  public saveWithCtx(ctx: APIContext) {
-    this.cacheChangeset();
-    return this.save(ctx.context as SaveOptions);
+  public saveWithCtx<M extends Model>(
+    ctx: APIContext,
+    options?: SaveOptions<Attributes<M>>,
+    eventOpts?: EventOverrideOptions
+  ) {
+    const hookContext: HookContext = {
+      ...ctx.context,
+      event: {
+        ...eventOpts,
+        create: true,
+      },
+    };
+    return this.save({ ...options, ...hookContext });
   }
 
   /**
    * This is the same as calling `set` and then calling `save`.
    */
-  public updateWithCtx(ctx: APIContext, keys: Partial<TModelAttributes>) {
+  public updateWithCtx(
+    ctx: APIContext,
+    keys: Partial<TModelAttributes>,
+    eventOpts?: EventOverrideOptions
+  ) {
+    const hookContext: HookContext = {
+      ...ctx.context,
+      event: {
+        ...eventOpts,
+        create: true,
+      },
+    };
     this.set(keys);
-    this.cacheChangeset();
-    return this.save(ctx.context as SaveOptions);
+    return this.save(hookContext);
   }
 
   /**
    * Destroy the row corresponding to this instance. Depending on your setting for paranoid, the row will
    * either be completely deleted, or have its deletedAt timestamp set to the current time.
    */
-  public destroyWithCtx(ctx: APIContext) {
-    return this.destroy(ctx.context as InstanceDestroyOptions);
+  public destroyWithCtx(ctx: APIContext, eventOpts?: EventOverrideOptions) {
+    const hookContext: HookContext = {
+      ...ctx.context,
+      event: {
+        ...eventOpts,
+        create: true,
+      },
+    };
+    return this.destroy(hookContext);
+  }
+
+  /**
+   * Restore the row corresponding to this instance. Only available for paranoid models.
+   */
+  public restoreWithCtx(ctx: APIContext, eventOpts?: EventOverrideOptions) {
+    const hookContext: HookContext = {
+      ...ctx.context,
+      event: {
+        ...eventOpts,
+        create: true,
+      },
+    };
+    return this.restore(hookContext);
   }
 
   /**
@@ -70,11 +124,19 @@ class Model<
   public static findOrCreateWithCtx<M extends Model>(
     this: ModelStatic<M>,
     ctx: APIContext,
-    options: FindOrCreateOptions<Attributes<M>, CreationAttributes<M>>
+    options: FindOrCreateOptions<Attributes<M>, CreationAttributes<M>>,
+    eventOpts?: EventOverrideOptions
   ) {
+    const hookContext: HookContext = {
+      ...ctx.context,
+      event: {
+        ...eventOpts,
+        create: true,
+      },
+    };
     return this.findOrCreate({
       ...options,
-      ...ctx.context,
+      ...hookContext,
     });
   }
 
@@ -84,20 +146,28 @@ class Model<
   public static createWithCtx<M extends Model>(
     this: ModelStatic<M>,
     ctx: APIContext,
-    values?: CreationAttributes<M>
+    values?: CreationAttributes<M>,
+    eventOpts?: EventOverrideOptions
   ) {
-    return this.create(values, ctx.context as CreateOptions);
+    const hookContext: HookContext = {
+      ...ctx.context,
+      event: {
+        ...eventOpts,
+        create: true,
+      },
+    };
+    return this.create(values, hookContext);
   }
 
-  @BeforeCreate
-  static async beforeCreateEvent<T extends Model>(model: T) {
+  @BeforeSave
+  static async beforeSaveEvent<T extends Model>(model: T) {
     model.cacheChangeset();
   }
 
   @AfterCreate
   static async afterCreateEvent<T extends Model>(
     model: T,
-    context: APIContext["context"]
+    context: HookContext
   ) {
     await this.insertEvent("create", model, context);
   }
@@ -105,7 +175,7 @@ class Model<
   @AfterUpsert
   static async afterUpsertEvent<T extends Model>(
     model: T,
-    context: APIContext["context"]
+    context: HookContext
   ) {
     await this.insertEvent("create", model, context);
   }
@@ -113,7 +183,7 @@ class Model<
   @AfterUpdate
   static async afterUpdateEvent<T extends Model>(
     model: T,
-    context: APIContext["context"]
+    context: HookContext
   ) {
     await this.insertEvent("update", model, context);
   }
@@ -121,9 +191,17 @@ class Model<
   @AfterDestroy
   static async afterDestroyEvent<T extends Model>(
     model: T,
-    context: APIContext["context"]
+    context: HookContext
   ) {
     await this.insertEvent("delete", model, context);
+  }
+
+  @AfterRestore
+  static async afterRestoreEvent<T extends Model>(
+    model: T,
+    context: HookContext
+  ) {
+    await this.insertEvent("create", model, context);
   }
 
   /**
@@ -136,13 +214,12 @@ class Model<
   protected static async insertEvent<T extends Model>(
     name: string,
     model: T,
-    context: APIContext["context"] & InstanceUpdateOptions
+    context: HookContext
   ) {
-    const namespace = this.eventNamespace;
+    const namespace = this.eventNamespace ?? this.tableName;
     const models = this.sequelize!.models;
 
-    // If no namespace is defined, don't create an event
-    if (!namespace || context.silent) {
+    if (!context.event?.create) {
       return;
     }
 
@@ -160,8 +237,8 @@ class Model<
 
     return models.event.create(
       {
-        name: `${namespace}.${name}`,
-        modelId: model.id,
+        name: `${namespace}.${context.event.name ?? name}`,
+        modelId: "modelId" in model ? model.modelId : model.id,
         collectionId:
           "collectionId" in model
             ? model.collectionId
@@ -190,6 +267,7 @@ class Model<
         authType: context.auth?.type,
         ip: context.ip,
         changes: model.previousChangeset,
+        data: context.event.data,
       },
       {
         transaction: context.transaction,
@@ -204,7 +282,10 @@ class Model<
    * @param callback The function to call for each batch of results
    */
   static async findAllInBatches<T extends Model>(
-    query: Replace<FindOptions<T>, "limit", "batchLimit">,
+    query: Replace<FindOptions<T>, "limit", "batchLimit"> & {
+      /** The maximum number of results to return, after which the query will stop. */
+      totalLimit?: number;
+    },
     callback: (results: Array<T>, query: FindOptions<T>) => Promise<void>
   ) {
     const mappedQuery = {
@@ -220,7 +301,10 @@ class Model<
       results = await this.findAll<T>(mappedQuery);
       await callback(results, mappedQuery);
       mappedQuery.offset += mappedQuery.limit;
-    } while (results.length >= mappedQuery.limit);
+    } while (
+      results.length >= mappedQuery.limit &&
+      (mappedQuery.totalLimit ?? Infinity) > mappedQuery.offset
+    );
   }
 
   /**

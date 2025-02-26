@@ -1,14 +1,14 @@
 import Router from "koa-router";
-import { Transaction } from "sequelize";
+import { Transaction, WhereOptions } from "sequelize";
 import { QueryNotices } from "@shared/types";
 import subscriptionCreator from "@server/commands/subscriptionCreator";
-import subscriptionDestroyer from "@server/commands/subscriptionDestroyer";
+import { createContext } from "@server/context";
 import env from "@server/env";
 import auth from "@server/middlewares/authentication";
 import { rateLimiter } from "@server/middlewares/rateLimiter";
 import { transaction } from "@server/middlewares/transaction";
 import validate from "@server/middlewares/validate";
-import { Subscription, Document, User } from "@server/models";
+import { Subscription, Document, User, Collection } from "@server/models";
 import SubscriptionHelper from "@server/models/helpers/SubscriptionHelper";
 import { authorize } from "@server/policies";
 import { presentSubscription } from "@server/presenters";
@@ -26,18 +26,32 @@ router.post(
   validate(T.SubscriptionsListSchema),
   async (ctx: APIContext<T.SubscriptionsListReq>) => {
     const { user } = ctx.state.auth;
-    const { documentId, event } = ctx.input.body;
+    const { event, collectionId, documentId } = ctx.input.body;
 
-    const document = await Document.findByPk(documentId, { userId: user.id });
+    const where: WhereOptions<Subscription> = {
+      userId: user.id,
+      event,
+    };
 
-    authorize(user, "read", document);
+    if (collectionId) {
+      const collection = await Collection.scope({
+        method: ["withMembership", user.id],
+      }).findByPk(collectionId);
+      authorize(user, "read", collection);
+
+      where.collectionId = collectionId;
+    } else {
+      // documentId will be available here
+      const document = await Document.findByPk(documentId!, {
+        userId: user.id,
+      });
+      authorize(user, "read", document);
+
+      where.documentId = documentId;
+    }
 
     const subscriptions = await Subscription.findAll({
-      where: {
-        documentId: document.id,
-        userId: user.id,
-        event,
-      },
+      where,
       order: [["createdAt", "DESC"]],
       offset: ctx.state.pagination.offset,
       limit: ctx.state.pagination.limit,
@@ -56,19 +70,33 @@ router.post(
   validate(T.SubscriptionsInfoSchema),
   async (ctx: APIContext<T.SubscriptionsInfoReq>) => {
     const { user } = ctx.state.auth;
-    const { documentId, event } = ctx.input.body;
+    const { event, collectionId, documentId } = ctx.input.body;
 
-    const document = await Document.findByPk(documentId, { userId: user.id });
+    const where: WhereOptions<Subscription> = {
+      userId: user.id,
+      event,
+    };
 
-    authorize(user, "read", document);
+    if (collectionId) {
+      const collection = await Collection.scope({
+        method: ["withMembership", user.id],
+      }).findByPk(collectionId);
+      authorize(user, "read", collection);
+
+      where.collectionId = collectionId;
+    } else {
+      // documentId will be available here
+      const document = await Document.findByPk(documentId!, {
+        userId: user.id,
+      });
+      authorize(user, "read", document);
+
+      where.documentId = documentId;
+    }
 
     // There can be only one subscription with these props.
     const subscription = await Subscription.findOne({
-      where: {
-        userId: user.id,
-        documentId: document.id,
-        event,
-      },
+      where,
       rejectOnEmpty: true,
     });
 
@@ -84,23 +112,29 @@ router.post(
   validate(T.SubscriptionsCreateSchema),
   transaction(),
   async (ctx: APIContext<T.SubscriptionsCreateReq>) => {
-    const { auth, transaction } = ctx.state;
-    const { user } = auth;
-    const { documentId, event } = ctx.input.body;
+    const { user } = ctx.state.auth;
+    const { event, collectionId, documentId } = ctx.input.body;
 
-    const document = await Document.findByPk(documentId, {
-      userId: user.id,
-      transaction,
-    });
+    if (collectionId) {
+      const collection = await Collection.scope({
+        method: ["withMembership", user.id],
+      }).findByPk(collectionId);
 
-    authorize(user, "subscribe", document);
+      authorize(user, "subscribe", collection);
+    } else {
+      // documentId will be available here
+      const document = await Document.findByPk(documentId!, {
+        userId: user.id,
+      });
+
+      authorize(user, "subscribe", document);
+    }
 
     const subscription = await subscriptionCreator({
-      user,
-      documentId: document.id,
+      ctx,
+      documentId,
+      collectionId,
       event,
-      ip: ctx.request.ip,
-      transaction,
     });
 
     ctx.body = {
@@ -146,7 +180,13 @@ router.get(
 
     authorize(user, "delete", subscription);
 
-    await subscription.destroy({ transaction });
+    await subscription.destroyWithCtx(
+      createContext({
+        user,
+        ip: ctx.request.ip,
+        transaction,
+      })
+    );
 
     ctx.redirect(
       `${user.team.url}/home?notice=${QueryNotices.UnsubscribeDocument}`
@@ -160,8 +200,8 @@ router.post(
   validate(T.SubscriptionsDeleteSchema),
   transaction(),
   async (ctx: APIContext<T.SubscriptionsDeleteReq>) => {
-    const { auth, transaction } = ctx.state;
-    const { user } = auth;
+    const { transaction } = ctx.state;
+    const { user } = ctx.state.auth;
     const { id } = ctx.input.body;
 
     const subscription = await Subscription.findByPk(id, {
@@ -171,12 +211,7 @@ router.post(
 
     authorize(user, "delete", subscription);
 
-    await subscriptionDestroyer({
-      user,
-      subscription,
-      ip: ctx.request.ip,
-      transaction,
-    });
+    await subscription.destroyWithCtx(ctx);
 
     ctx.body = {
       success: true,

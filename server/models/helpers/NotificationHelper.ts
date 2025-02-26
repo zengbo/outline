@@ -1,5 +1,10 @@
+import uniq from "lodash/uniq";
 import { Op } from "sequelize";
-import { NotificationEventType } from "@shared/types";
+import {
+  NotificationEventType,
+  MentionType,
+  SubscriptionType,
+} from "@shared/types";
 import Logger from "@server/logging/Logger";
 import {
   User,
@@ -10,6 +15,7 @@ import {
   View,
 } from "@server/models";
 import { can } from "@server/policies";
+import { ProsemirrorHelper } from "./ProsemirrorHelper";
 
 export default class NotificationHelper {
   /**
@@ -54,12 +60,12 @@ export default class NotificationHelper {
     comment: Comment,
     actorId: string
   ): Promise<User[]> => {
-    let recipients = await this.getDocumentNotificationRecipients(
+    let recipients = await this.getDocumentNotificationRecipients({
       document,
-      NotificationEventType.UpdateDocument,
+      notificationType: NotificationEventType.UpdateDocument,
+      onlySubscribers: !comment.parentCommentId,
       actorId,
-      !comment.parentCommentId
-    );
+    });
 
     recipients = recipients.filter((recipient) =>
       recipient.subscribedToEventType(NotificationEventType.CreateComment)
@@ -67,7 +73,7 @@ export default class NotificationHelper {
 
     if (recipients.length > 0 && comment.parentCommentId) {
       const contextComments = await Comment.findAll({
-        attributes: ["createdById"],
+        attributes: ["createdById", "data"],
         where: {
           [Op.or]: [
             { id: comment.parentCommentId },
@@ -76,7 +82,20 @@ export default class NotificationHelper {
         },
       });
 
-      const userIdsInThread = contextComments.map((c) => c.createdById);
+      const createdUserIdsInThread = contextComments.map((c) => c.createdById);
+      const mentionedUserIdsInThread = contextComments
+        .flatMap((c) =>
+          ProsemirrorHelper.parseMentions(
+            ProsemirrorHelper.toProsemirror(c.data),
+            { type: MentionType.User }
+          )
+        )
+        .map((mention) => mention.modelId);
+
+      const userIdsInThread = uniq([
+        ...createdUserIdsInThread,
+        ...mentionedUserIdsInThread,
+      ]);
       recipients = recipients.filter((r) => userIdsInThread.includes(r.id));
     }
 
@@ -112,18 +131,22 @@ export default class NotificationHelper {
    * Get the recipients of a notification for a document event.
    *
    * @param document The document to get recipients for.
-   * @param eventType The event name.
+   * @param notificationType The notification type for which to find the recipients.
+   * @param onlySubscribers Whether to consider only the users who have active subscription to the document.
    * @param actorId The id of the user that performed the action.
-   * @param onlySubscribers Whether to only return recipients that are actively
-   * subscribed to the document.
    * @returns A list of recipients
    */
-  public static getDocumentNotificationRecipients = async (
-    document: Document,
-    eventType: NotificationEventType,
-    actorId: string,
-    onlySubscribers: boolean
-  ): Promise<User[]> => {
+  public static getDocumentNotificationRecipients = async ({
+    document,
+    notificationType,
+    onlySubscribers,
+    actorId,
+  }: {
+    document: Document;
+    notificationType: NotificationEventType;
+    onlySubscribers: boolean;
+    actorId: string;
+  }): Promise<User[]> => {
     // First find all the users that have notifications enabled for this event
     // type at all and aren't the one that performed the action.
     let recipients = await User.findAll({
@@ -136,7 +159,7 @@ export default class NotificationHelper {
     });
 
     recipients = recipients.filter((recipient) =>
-      recipient.subscribedToEventType(eventType)
+      recipient.subscribedToEventType(notificationType)
     );
 
     // Filter further to only those that have a subscription to the document…
@@ -145,8 +168,11 @@ export default class NotificationHelper {
         attributes: ["userId"],
         where: {
           userId: recipients.map((recipient) => recipient.id),
-          documentId: document.id,
-          event: eventType,
+          event: SubscriptionType.Document,
+          [Op.or]: [
+            { collectionId: document.collectionId },
+            { documentId: document.id },
+          ],
         },
       });
 

@@ -68,9 +68,13 @@ export class StateStore {
   };
 }
 
-export async function request(endpoint: string, accessToken: string) {
+export async function request(
+  method: "GET" | "POST",
+  endpoint: string,
+  accessToken: string
+) {
   const response = await fetch(endpoint, {
-    method: "GET",
+    method,
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
@@ -123,9 +127,7 @@ export async function getTeamFromContext(ctx: Context) {
   } else if (domain.custom) {
     team = await Team.findOne({ where: { domain: domain.host } });
   } else if (domain.teamSubdomain) {
-    team = await Team.findOne({
-      where: { subdomain: domain.teamSubdomain },
-    });
+    team = await Team.findBySubdomain(domain.teamSubdomain);
   }
 
   return team;

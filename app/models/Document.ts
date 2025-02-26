@@ -27,10 +27,12 @@ import { client } from "~/utils/ApiClient";
 import { settingsPath } from "~/utils/routeHelpers";
 import Collection from "./Collection";
 import Notification from "./Notification";
+import Pin from "./Pin";
 import View from "./View";
 import ArchivableModel from "./base/ArchivableModel";
 import Field from "./decorators/Field";
 import Relation from "./decorators/Relation";
+import { Searchable } from "./interfaces/Searchable";
 
 type SaveOptions = JSONObject & {
   publish?: boolean;
@@ -38,7 +40,7 @@ type SaveOptions = JSONObject & {
   autosave?: boolean;
 };
 
-export default class Document extends ArchivableModel {
+export default class Document extends ArchivableModel implements Searchable {
   static modelName = "Document";
 
   constructor(fields: Record<string, any>, store: DocumentsStore) {
@@ -84,6 +86,11 @@ export default class Document extends ArchivableModel {
     /** The name of the file this document was imported from. */
     fileName?: string;
   };
+
+  @computed
+  get searchContent(): string {
+    return this.title;
+  }
 
   /**
    * The name of the original data source, if imported.
@@ -301,9 +308,7 @@ export default class Document extends ArchivableModel {
    */
   @computed
   get isSubscribed(): boolean {
-    return !!this.store.rootStore.subscriptions.orderedData.find(
-      (subscription) => subscription.documentId === this.id
-    );
+    return !!this.store.rootStore.subscriptions.getByDocumentId(this.id);
   }
 
   /**
@@ -444,7 +449,11 @@ export default class Document extends ArchivableModel {
   restore = (options?: { revisionId?: string; collectionId?: string }) =>
     this.store.restore(this, options);
 
-  unpublish = () => this.store.unpublish(this);
+  unpublish = (
+    options: { detach?: boolean } = {
+      detach: false,
+    }
+  ) => this.store.unpublish(this, options);
 
   @action
   enableEmbeds = () => {
@@ -457,11 +466,16 @@ export default class Document extends ArchivableModel {
   };
 
   @action
-  pin = (collectionId?: string | null) =>
-    this.store.rootStore.pins.create({
+  pin = async (collectionId?: string | null) => {
+    const pin = new Pin({}, this.store.rootStore.pins);
+
+    await pin.save({
       documentId: this.id,
       ...(collectionId ? { collectionId } : {}),
     });
+
+    return pin;
+  };
 
   @action
   unpin = (collectionId?: string) => {
@@ -495,7 +509,7 @@ export default class Document extends ArchivableModel {
    * @returns A promise that resolves when the subscription is destroyed.
    */
   @action
-  unsubscribe = (userId: string) => this.store.unsubscribe(userId, this);
+  unsubscribe = () => this.store.unsubscribe(this);
 
   @action
   view = () => {

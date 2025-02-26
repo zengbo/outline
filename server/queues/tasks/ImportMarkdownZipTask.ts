@@ -94,7 +94,7 @@ export default class ImportMarkdownZipTask extends ImportTask {
                     ? ""
                     : await fs.readFile(child.path, "utf8"),
                 user,
-                ctx: createContext(user, transaction),
+                ctx: createContext({ user, transaction }),
               })
           );
 
@@ -176,7 +176,7 @@ export default class ImportMarkdownZipTask extends ImportTask {
         document.text = document.text
           .replace(new RegExp(escapeRegExp(encodedPath), "g"), reference)
           .replace(
-            new RegExp(`\.?/?${escapeRegExp(normalizedAttachmentPath)}`, "g"),
+            new RegExp(`\\\.?/?${escapeRegExp(normalizedAttachmentPath)}`, "g"),
             reference
           );
       }

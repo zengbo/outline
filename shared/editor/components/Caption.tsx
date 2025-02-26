@@ -1,7 +1,7 @@
 import * as React from "react";
 import styled from "styled-components";
-import breakpoint from "styled-components-breakpoint";
 import { s } from "../../styles";
+import { EditorStyleHelper } from "../styles/EditorStyleHelper";
 
 type Props = {
   /** Callback triggered when the caption is blurred */
@@ -12,6 +12,8 @@ type Props = {
   isSelected: boolean;
   /** Placeholder text to display when the caption is empty */
   placeholder: string;
+  /** Width of the caption */
+  width: number;
   /** Additional CSS styles to apply to the caption */
   style?: React.CSSProperties;
   children: React.ReactNode;
@@ -20,7 +22,7 @@ type Props = {
 /**
  * A component that renders a caption for an image or video.
  */
-function Caption({ placeholder, children, isSelected, ...rest }: Props) {
+function Caption({ placeholder, children, isSelected, width, ...rest }: Props) {
   const handlePaste = (event: React.ClipboardEvent<HTMLParagraphElement>) => {
     event.preventDefault();
     const text = event.clipboardData.getData("text/plain");
@@ -34,10 +36,11 @@ function Caption({ placeholder, children, isSelected, ...rest }: Props) {
 
   return (
     <Content
+      $width={width}
       $isSelected={isSelected}
       onMouseDown={handleMouseDown}
       onPaste={handlePaste}
-      className="caption"
+      className={EditorStyleHelper.imageCaption}
       tabIndex={-1}
       role="textbox"
       contentEditable
@@ -50,32 +53,17 @@ function Caption({ placeholder, children, isSelected, ...rest }: Props) {
   );
 }
 
-const Content = styled.p<{ $isSelected: boolean }>`
-  border: 0;
-  display: block;
-  font-style: italic;
-  font-weight: normal;
-  color: ${s("textSecondary")};
-  padding: 8px 0 4px;
-  line-height: 16px;
-  text-align: center;
-  min-height: 1em;
-  outline: none;
-  background: none;
-  resize: none;
-  user-select: text;
-  margin: 0 !important;
+const Content = styled.p<{ $width: number; $isSelected: boolean }>`
   cursor: text;
-
-  ${breakpoint("tablet")`
-    font-size: 13px;
-  `};
+  width: ${(props) => props.$width}px;
+  min-width: 200px;
+  max-width: 100%;
 
   &:empty:not(:focus) {
     display: ${(props) => (props.$isSelected ? "block" : "none")}};
   }
 
-  &:empty:before {
+  &:empty::before {
     color: ${s("placeholder")};
     content: attr(data-caption);
     pointer-events: none;

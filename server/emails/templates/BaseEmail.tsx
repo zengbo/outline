@@ -18,7 +18,6 @@ import { TextHelper } from "@server/models/helpers/TextHelper";
 import { taskQueue } from "@server/queues";
 import { TaskPriority } from "@server/queues/tasks/BaseTask";
 import { NotificationMetadata } from "@server/types";
-import { getEmailMessageId } from "@server/utils/emails";
 
 export enum EmailMessageCategory {
   Authentication = "authentication",
@@ -138,7 +137,7 @@ export default abstract class BaseEmail<
     }
 
     const messageId = notification
-      ? getEmailMessageId(notification.id)
+      ? Notification.emailMessageId(notification.id)
       : undefined;
 
     const references = notification
@@ -192,9 +191,12 @@ export default abstract class BaseEmail<
 
     const parsedFrom = addressparser(env.SMTP_FROM_EMAIL)[0];
     const domain = parsedFrom.address.split("@")[1];
+    const customFromName = this.fromName?.(props);
 
     return {
-      name: this.fromName?.(props) ?? parsedFrom.name,
+      name: customFromName
+        ? `${customFromName} via ${env.APP_NAME}`
+        : parsedFrom.name,
       address:
         env.isCloudHosted &&
         this.category === EmailMessageCategory.Authentication

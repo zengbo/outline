@@ -27,9 +27,11 @@ import {
   BeforeCreate,
   IsNumeric,
 } from "sequelize-typescript";
+import { isEmail } from "validator";
 import { TeamPreferenceDefaults } from "@shared/constants";
 import { TeamPreference, TeamPreferences, UserRole } from "@shared/types";
 import { getBaseDomain, RESERVED_SUBDOMAINS } from "@shared/utils/domains";
+import { parseEmail } from "@shared/utils/email";
 import env from "@server/env";
 import { ValidationError } from "@server/errors";
 import DeleteAttachmentTask from "@server/queues/tasks/DeleteAttachmentTask";
@@ -169,6 +171,9 @@ class Team extends ParanoidModel<
   @Column
   lastActiveAt: Date | null;
 
+  @Column(DataType.ARRAY(DataType.STRING))
+  previousSubdomains: string[] | null;
+
   // getters
 
   /**
@@ -293,14 +298,20 @@ class Team extends ParanoidModel<
    * Find whether the passed domain can be used to sign-in to this team. Note
    * that this method always returns true if no domain restrictions are set.
    *
-   * @param domain The domain to check
+   * @param domainOrEmail The domain or email to check
    * @returns True if the domain is allowed to sign-in to this team
    */
   public isDomainAllowed = async function (
     this: Team,
-    domain: string
+    domainOrEmail: string
   ): Promise<boolean> {
     const allowedDomains = (await this.$get("allowedDomains")) || [];
+
+    let domain = domainOrEmail;
+    if (isEmail(domainOrEmail)) {
+      const parsed = parseEmail(domainOrEmail);
+      domain = parsed.domain;
+    }
 
     return (
       allowedDomains.length === 0 ||
@@ -361,6 +372,25 @@ class Team extends ParanoidModel<
     return model;
   }
 
+  @BeforeUpdate
+  static async savePreviousSubdomain(model: Team) {
+    const previousSubdomain = model.previous("subdomain");
+    if (previousSubdomain && previousSubdomain !== model.subdomain) {
+      model.previousSubdomains = model.previousSubdomains || [];
+
+      if (!model.previousSubdomains.includes(previousSubdomain)) {
+        // Add the previous subdomain to the list of previous subdomains
+        // upto a maximum of 3 previous subdomains
+        model.previousSubdomains.push(previousSubdomain);
+        if (model.previousSubdomains.length > 3) {
+          model.previousSubdomains.shift();
+        }
+      }
+    }
+
+    return model;
+  }
+
   @AfterUpdate
   static deletePreviousAvatar = async (model: Team) => {
     const previousAvatarUrl = model.previous("avatarUrl");
@@ -385,6 +415,41 @@ class Team extends ParanoidModel<
       }
     }
   };
+
+  /**
+   * Find a team by its current or previous subdomain.
+   *
+   * @param subdomain - The subdomain to search for.
+   * @returns The team with the given or previous subdomain, or null if not found.
+   */
+  static async findBySubdomain(subdomain: string) {
+    // Preference is always given to the team with the subdomain currently
+    // otherwise we can try and find a team that previously used the subdomain.
+    return (
+      (await this.findOne({
+        where: {
+          subdomain,
+        },
+      })) || (await this.findByPreviousSubdomain(subdomain))
+    );
+  }
+
+  /**
+   * Find a team by its previous subdomain.
+   *
+   * @param previousSubdomain - The previous subdomain to search for.
+   * @returns The team with the given previous subdomain, or null if not found.
+   */
+  static async findByPreviousSubdomain(previousSubdomain: string) {
+    return this.findOne({
+      where: {
+        previousSubdomains: {
+          [Op.contains]: [previousSubdomain],
+        },
+      },
+      order: [["updatedAt", "DESC"]],
+    });
+  }
 }
 
 export default Team;
